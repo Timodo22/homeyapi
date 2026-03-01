@@ -13,8 +13,8 @@ export default {
     // 2. Je API Key (die lange token)
     const apiToken = env.HOMEY_TOKEN; 
 
-    // Endpoint voor variabelen
-    const url = `https://${homeyId}.connect.athom.com/api/app/com.athom.logic/variables`;
+    // 🚨 HIER ZAT DE FOUT: Dit is het correcte endpoint voor de Homey Web API
+    const url = `https://${homeyId}.connect.athom.com/api/manager/logic/variable`;
 
     try {
       const response = await fetch(url, {
