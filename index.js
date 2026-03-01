@@ -1,39 +1,75 @@
 export default {
   async fetch(request, env) {
     const corsHeaders = {
-      "Access-Control-Allow-Origin": "*", 
+      "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type, Authorization",
     };
 
     if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
 
-    // 1. Je Cloud ID (bijv. 642... )
-    const homeyId = env.HOMEY_ID; 
-    // 2. Je API Key (die lange token)
-    const apiToken = env.HOMEY_TOKEN; 
+    const homeyId = env.HOMEY_ID;
+    const apiToken = env.HOMEY_TOKEN;
+    const base = `https://${homeyId}.connect.athom.com/api`;
 
-    // 🚨 HIER ZAT DE FOUT: Dit is het correcte endpoint voor de Homey Web API
-    const url = `https://${homeyId}.connect.athom.com/api/manager/logic/variable`;
+    const homeyFetch = async (path) => {
+      try {
+        const res = await fetch(`${base}${path}`, {
+          headers: {
+            "Authorization": `Bearer ${apiToken}`,
+            "Content-Type": "application/json",
+          },
+        });
+        if (!res.ok) return { _error: `HTTP ${res.status}`, _path: path };
+        return await res.json();
+      } catch (e) {
+        return { _error: e.message, _path: path };
+      }
+    };
 
-    try {
-      const response = await fetch(url, {
-        headers: {
-          "Authorization": `Bearer ${apiToken}`,
-          "Content-Type": "application/json",
-        },
-      });
+    // Fetch variables, devices, and insights list in parallel
+    const [variables, devices, insights] = await Promise.all([
+      homeyFetch("/manager/logic/variable"),
+      homeyFetch("/manager/devices/device"),
+      homeyFetch("/manager/insights/log"),
+    ]);
 
-      const data = await response.json();
-      
-      return new Response(JSON.stringify(data), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    } catch (err) {
-      return new Response(JSON.stringify({ error: "Kan Homey niet bereiken" }), { 
-        status: 500, 
-        headers: corsHeaders 
-      });
+    // Fetch entries for first 15 insight logs (to avoid too many requests)
+    let insightEntries = {};
+    const insightsObj = insights?.result ?? insights ?? {};
+    if (!insightsObj._error) {
+      const logs = Object.values(insightsObj)
+        .filter(l => l && typeof l === "object" && l.uri && l.id)
+        .slice(0, 15);
+
+      const results = await Promise.all(
+        logs.map(async (log) => {
+          const entries = await homeyFetch(
+            `/manager/insights/log/${encodeURIComponent(log.uri)}/${encodeURIComponent(log.id)}/entry?resolution=last24Hours`
+          );
+          return {
+            key: `${log.uri}::${log.id}`,
+            name: log.title || log.id,
+            uri: log.uri,
+            id: log.id,
+            unit: log.units,
+            entries,
+          };
+        })
+      );
+
+      results.forEach(r => { insightEntries[r.key] = r; });
     }
+
+    const payload = {
+      variables: variables?.result ?? variables,
+      devices: devices?.result ?? devices,
+      insights: insightsObj,
+      insightEntries,
+    };
+
+    return new Response(JSON.stringify(payload), {
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
-}
+};
